@@ -1,6 +1,6 @@
-# JavaMinDB v0.2 API contract
+# JavaMinDB v0.3 API contract
 
-This document defines the public behavior of the v0.2 append-only engine.
+This document defines the public behavior of the v0.3 LSM-foundation engine.
 
 ## Opening
 
@@ -9,7 +9,7 @@ MiniDB.open(Path directory)
 MiniDB.open(String directory)
 ```
 
-Opening creates the directory if needed and takes an exclusive file lock. It validates/migrates the data file, repairs only physically incomplete final records, rebuilds the in-memory index, validates the WAL, replays WAL records newer than the data-file high-water sequence, checkpoints recovered data, and resets the WAL.
+Opening creates the directory if needed and takes an exclusive file lock. It validates/migrates the canonical data file, repairs only physically incomplete final records, rebuilds the live-key index, validates/replays the WAL, opens persisted SSTables, and reconstructs the MemTable from canonical records newer than the newest SSTable sequence.
 
 ## Keys and values
 
@@ -18,7 +18,7 @@ The API is binary.
 - key: non-null, non-empty, at most `MiniDB.MAX_KEY_SIZE`
 - value: non-null, may be empty, at most `MiniDB.MAX_VALUE_SIZE`
 - caller arrays are copied
-- `get()` returns a copy
+- `get()` and `KeyValue` accessors return copies
 
 Invalid input throws `IllegalArgumentException` before mutation.
 
@@ -32,8 +32,9 @@ Write ordering is:
 
 1. append a sequence-numbered, CRC32C-protected WAL record,
 2. fsync the WAL,
-3. append the same record to the data file,
-4. update the in-memory index.
+3. append the same record to the canonical data file,
+4. update the live-key index,
+5. update the ordered MemTable.
 
 When `put()` returns successfully, the mutation has crossed the WAL durability boundary.
 
@@ -43,7 +44,7 @@ When `put()` returns successfully, the mutation has crossed the WAL durability b
 boolean delete(byte[] key) throws IOException
 ```
 
-An existing key gets a WAL-protected DELETE tombstone and returns `true`. An absent key is a no-op and returns `false`.
+An existing key gets a WAL-protected DELETE tombstone and returns `true`. An absent key is a no-op and returns `false`. Tombstones in newer MemTables/SSTables shadow values in older SSTables.
 
 ## `get`
 
@@ -51,7 +52,7 @@ An existing key gets a WAL-protected DELETE tombstone and returns `true`. An abs
 byte[] get(byte[] key) throws IOException
 ```
 
-Returns the latest live value or `null`.
+The read path checks the current MemTable, then SSTables from newest to oldest, then the canonical data-file index as a compatibility/recovery fallback. Returns the latest live value or `null`.
 
 ## `size`
 
@@ -61,13 +62,29 @@ long size()
 
 Returns live-key count.
 
+## `flush`
+
+```java
+void flush() throws IOException
+```
+
+Freezes the current ordered MemTable and writes one immutable SSTable. `flush()` does not replace the WAL durability contract; the canonical data/WAL path remains authoritative in v0.3.
+
 ## `sync`
 
 ```java
 void sync() throws IOException
 ```
 
-Checkpoints the current state by forcing `minidb.data` and then resetting the WAL. Successful writes do not require `sync()` to be recoverable because the WAL is forced before the write returns.
+Forces the canonical data file, resets the WAL, and flushes the current MemTable into an SSTable. Successful writes do not require `sync()` to be recoverable because the WAL is forced before the write returns.
+
+## `entries`
+
+```java
+List<KeyValue> entries() throws IOException
+```
+
+Returns a stable snapshot of currently live entries ordered by unsigned lexicographic key bytes. Newer sequence numbers override older SSTable records and tombstones are removed from the returned snapshot.
 
 ## `merge`
 
@@ -75,23 +92,23 @@ Checkpoints the current state by forcing `minidb.data` and then resetting the WA
 void merge() throws IOException
 ```
 
-Rewrites only live PUT records into a fresh format-v2 data file, forces it, replaces the canonical data file, and resets the WAL. Sequence numbers of surviving entries are preserved.
+Rewrites only live PUT records into a fresh format-v2 canonical data file, resets the WAL, removes stale SSTables, reconstructs the current live state, and publishes one fresh SSTable. Sequence numbers of surviving entries are preserved.
 
 ## I/O failures and ambiguous completion
 
-If a persistence operation throws after a WAL record may have been forced, the mutation may already be durable. The current `MiniDB` instance enters a recovery-required state: further data operations fail with `IllegalStateException`. Close it and reopen the directory; WAL recovery determines the authoritative durable result.
+If a persistence operation throws after a WAL record may have been forced, the mutation may already be durable. The current `MiniDB` instance enters a recovery-required state: further data operations fail with `IllegalStateException`. Close it and reopen the directory; canonical data/WAL recovery determines the authoritative durable result.
 
 ## `close`
 
-`close()` is idempotent. Under normal conditions it checkpoints before releasing files and the directory lock. If a prior persistence error put the instance into recovery-required state, close preserves the WAL instead of clearing it so the next open can recover.
+`close()` is idempotent. Under normal conditions it checkpoints and flushes pending MemTable state before releasing SSTables, WAL/data files, and the directory lock. If a prior persistence error put the instance into recovery-required state, close preserves recovery information instead of clearing it.
 
 ## Error model
 
 - `IllegalArgumentException`: invalid input
 - `IllegalStateException`: closed instance or reopen required after a persistence failure
 - `DatabaseLockedException`: directory already owned
-- `CorruptDatabaseException`: checksum or structural corruption
-- `UnsupportedFormatException`: unsupported data/WAL format
+- `CorruptDatabaseException`: checksum or structural corruption in canonical data, WAL, or SSTables
+- `UnsupportedFormatException`: unsupported canonical data/WAL format
 - other `IOException`: filesystem/I/O failure
 
 ## Threading/process model
