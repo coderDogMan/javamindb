@@ -5,18 +5,19 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * A tiny append-only embedded key-value store with a write-ahead log.
+ * A small embedded key-value store evolving toward an LSM architecture.
  *
- * <p>JavaMinDB v0.2 writes each mutation to a CRC32C-protected WAL and forces that WAL before the
- * mutation is appended to the data file. On open, committed WAL records missing from the data file
- * are replayed deterministically.</p>
+ * <p>JavaMinDB v0.3 keeps the Phase 2 WAL/data-file durability contract and adds an ordered
+ * MemTable plus immutable SSTables. The append-only data file remains the recovery authority while
+ * SSTables establish the sorted read/flush foundation for later compaction work.</p>
  */
 public final class MiniDB implements AutoCloseable {
     /** Maximum supported key size in bytes. */
@@ -28,10 +29,12 @@ public final class MiniDB implements AutoCloseable {
     private final DirectoryLock directoryLock;
     private final FaultInjector faultInjector;
     private final Map<ByteArrayKey, Long> indexes = new HashMap<>();
+    private final MemTable memTable = new MemTable();
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
 
     private DBFile dbFile;
     private WalFile walFile;
+    private SSTableManager sstableManager;
     private long maxSequence;
     private long nextSequence = 1;
     private boolean recoveryRequired;
@@ -86,6 +89,14 @@ public final class MiniDB implements AutoCloseable {
             db.walFile = WalFile.open(normalized);
             db.recoverFromWal();
             db.nextSequence = db.maxSequence + 1;
+
+            db.sstableManager = SSTableManager.open(normalized);
+            long sstableSequence = db.sstableManager.maxSequence();
+            if (sstableSequence > db.maxSequence) {
+                throw new CorruptDatabaseException(
+                        "SSTable state is newer than the canonical data/WAL state");
+            }
+            db.rebuildMemTableFromDataSince(sstableSequence);
             return db;
         } catch (IOException | RuntimeException error) {
             if (db != null) {
@@ -112,8 +123,7 @@ public final class MiniDB implements AutoCloseable {
      * Stores {@code value} for {@code key}.
      *
      * <p>When this method returns successfully, the mutation's WAL record has been forced to stable
-     * storage. The data-file append may still be awaiting a checkpoint; recovery replays the WAL if
-     * needed.</p>
+     * storage. The mutation is also present in the ordered MemTable.</p>
      */
     public void put(byte[] key, byte[] value) throws IOException {
         requireKey(key);
@@ -139,15 +149,23 @@ public final class MiniDB implements AutoCloseable {
         lock.readLock().lock();
         try {
             ensureUsable();
+
+            Entry pending = memTable.get(key);
+            if (pending != null) {
+                return pending.mark() == Entry.DELETE ? null : pending.value();
+            }
+
+            Entry persisted = sstableManager.get(key);
+            if (persisted != null) {
+                return persisted.mark() == Entry.DELETE ? null : persisted.value();
+            }
+
             Long offset = indexes.get(new ByteArrayKey(key));
             if (offset == null) {
                 return null;
             }
             Entry entry = dbFile.read(offset);
-            if (entry == null || entry.mark() == Entry.DELETE) {
-                return null;
-            }
-            return entry.value();
+            return entry == null || entry.mark() == Entry.DELETE ? null : entry.value();
         } finally {
             lock.readLock().unlock();
         }
@@ -191,16 +209,15 @@ public final class MiniDB implements AutoCloseable {
     }
 
     /**
-     * Checkpoints all successful mutations into the data file and resets the WAL.
-     *
-     * <p>Successful {@code put}/{@code delete} calls are already WAL-durable. {@code sync()} is the
-     * explicit checkpoint boundary that also forces the canonical data file.</p>
+     * Checkpoints successful mutations into the canonical data file and flushes the current
+     * MemTable into a new immutable SSTable.
      */
     public void sync() throws IOException {
         lock.writeLock().lock();
         try {
             ensureUsable();
             checkpoint();
+            flushMemTable();
         } catch (IOException error) {
             recoveryRequired = true;
             throw error;
@@ -209,19 +226,72 @@ public final class MiniDB implements AutoCloseable {
         }
     }
 
-    /** Rewrites only live entries into a fresh v2 data file, then checkpoints the WAL. */
-    public void merge() throws IOException {
+    /** Flushes the current ordered MemTable into a new immutable SSTable. */
+    public void flush() throws IOException {
         lock.writeLock().lock();
         try {
             ensureUsable();
-            rewriteCurrentStateToV2(false);
-            walFile.reset();
+            flushMemTable();
         } catch (IOException error) {
             recoveryRequired = true;
             throw error;
         } finally {
             lock.writeLock().unlock();
         }
+    }
+
+    /**
+     * Returns a stable key-ordered snapshot of currently live entries.
+     *
+     * <p>Keys are ordered by unsigned lexicographic byte order. Returned arrays are defensive
+     * copies.</p>
+     */
+    public List<KeyValue> entries() throws IOException {
+        lock.readLock().lock();
+        try {
+            ensureUsable();
+            TreeMap<ByteArrayKey, Entry> merged = new TreeMap<>();
+            for (Entry entry : sstableManager.mergedOrderedEntries()) {
+                mergeLatest(merged, entry);
+            }
+            for (Entry entry : memTable.orderedEntries()) {
+                mergeLatest(merged, entry);
+            }
+
+            return merged.values().stream()
+                    .filter(entry -> entry.mark() == Entry.PUT)
+                    .map(entry -> new KeyValue(entry.key(), entry.value()))
+                    .toList();
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    /** Rewrites only live entries into a fresh v2 data file and a single fresh SSTable. */
+    public void merge() throws IOException {
+        lock.writeLock().lock();
+        try {
+            ensureUsable();
+            rewriteCurrentStateToV2(false);
+            walFile.reset();
+            sstableManager.clear();
+            memTable.clear();
+            rebuildMemTableFromDataSince(0);
+            flushMemTable();
+        } catch (IOException error) {
+            recoveryRequired = true;
+            throw error;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    int sstableCountForTests() {
+        return sstableManager == null ? 0 : sstableManager.tableCount();
+    }
+
+    int memTableEntryCountForTests() {
+        return memTable.size();
     }
 
     private void appendDurably(Entry entry) throws IOException {
@@ -233,6 +303,7 @@ public final class MiniDB implements AutoCloseable {
         faultInjector.hit(FaultInjector.FaultPoint.AFTER_DATA_APPEND_BEFORE_INDEX_UPDATE);
 
         applyToIndex(entry, offset);
+        memTable.put(entry);
         maxSequence = Math.max(maxSequence, entry.sequence());
     }
 
@@ -240,6 +311,15 @@ public final class MiniDB implements AutoCloseable {
         dbFile.sync();
         faultInjector.hit(FaultInjector.FaultPoint.AFTER_DATA_SYNC_BEFORE_WAL_RESET);
         walFile.reset();
+    }
+
+    private void flushMemTable() throws IOException {
+        MemTable.ImmutableMemTable immutable = memTable.freeze();
+        if (immutable.isEmpty()) {
+            return;
+        }
+        sstableManager.flush(immutable);
+        memTable.clear();
     }
 
     private void recoverFromWal() throws IOException {
@@ -278,6 +358,21 @@ public final class MiniDB implements AutoCloseable {
             dbFile.sync();
         }
         walFile.reset();
+    }
+
+    private void rebuildMemTableFromDataSince(long sequenceExclusive) throws IOException {
+        memTable.clear();
+        long offset = dbFile.dataStartOffset();
+        while (offset < dbFile.size()) {
+            Entry entry = dbFile.read(offset);
+            if (entry == null) {
+                break;
+            }
+            if (entry.sequence() > sequenceExclusive) {
+                memTable.put(entry);
+            }
+            offset += entry.size();
+        }
     }
 
     private void rewriteCurrentStateToV2(boolean assignMigrationSequences) throws IOException {
@@ -381,6 +476,14 @@ public final class MiniDB implements AutoCloseable {
         }
     }
 
+    private static void mergeLatest(Map<ByteArrayKey, Entry> target, Entry entry) {
+        ByteArrayKey key = new ByteArrayKey(entry.key());
+        Entry previous = target.get(key);
+        if (previous == null || entry.sequence() > previous.sequence()) {
+            target.put(key, entry);
+        }
+    }
+
     private static void requireKey(byte[] key) {
         if (key == null || key.length == 0) {
             throw new IllegalArgumentException("key must not be null or empty");
@@ -412,6 +515,13 @@ public final class MiniDB implements AutoCloseable {
     }
 
     private void closeAfterOpenFailure(Throwable primary) {
+        if (sstableManager != null) {
+            try {
+                sstableManager.close();
+            } catch (IOException closeError) {
+                primary.addSuppressed(closeError);
+            }
+        }
         if (walFile != null) {
             try {
                 walFile.close();
@@ -444,6 +554,7 @@ public final class MiniDB implements AutoCloseable {
             if (!recoveryRequired && walFile != null) {
                 try {
                     checkpoint();
+                    flushMemTable();
                 } catch (IOException error) {
                     recoveryRequired = true;
                     failure = error;
@@ -467,11 +578,22 @@ public final class MiniDB implements AutoCloseable {
 
     private IOException closeResources() {
         IOException failure = null;
+        if (sstableManager != null) {
+            try {
+                sstableManager.close();
+            } catch (IOException error) {
+                failure = error;
+            }
+        }
         if (walFile != null) {
             try {
                 walFile.close();
             } catch (IOException error) {
-                failure = error;
+                if (failure == null) {
+                    failure = error;
+                } else {
+                    failure.addSuppressed(error);
+                }
             }
         }
         try {
@@ -493,25 +615,5 @@ public final class MiniDB implements AutoCloseable {
             }
         }
         return failure;
-    }
-
-    private static final class ByteArrayKey {
-        private final byte[] bytes;
-        private final int hash;
-
-        private ByteArrayKey(byte[] bytes) {
-            this.bytes = Arrays.copyOf(bytes, bytes.length);
-            this.hash = Arrays.hashCode(this.bytes);
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return other instanceof ByteArrayKey key && Arrays.equals(bytes, key.bytes);
-        }
-
-        @Override
-        public int hashCode() {
-            return hash;
-        }
     }
 }
