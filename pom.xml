@@ -4,7 +4,7 @@
 
     <groupId>io.github.coderdogman</groupId>
     <artifactId>javamindb</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
     <name>JavaMinDB</name>
     <description>A tiny embeddable log-structured key-value store written in pure Java.</description>
     <url>https://github.com/coderDogMan/javamindb</url>
@@ -57,9 +57,7 @@
                 <executions>
                     <execution>
                         <id>attach-sources</id>
-                        <goals>
-                            <goal>jar-no-fork</goal>
-                        </goals>
+                        <goals><goal>jar-no-fork</goal></goals>
                     </execution>
                 </executions>
             </plugin>
@@ -70,9 +68,7 @@
                 <executions>
                     <execution>
                         <id>attach-javadocs</id>
-                        <goals>
-                            <goal>jar</goal>
-                        </goals>
+                        <goals><goal>jar</goal></goals>
                     </execution>
                 </executions>
             </plugin>

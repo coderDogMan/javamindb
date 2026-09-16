@@ -5,16 +5,22 @@ import java.util.Arrays;
 
 final class FileFormat {
     static final byte[] MAGIC = new byte[]{'J', 'M', 'I', 'N', 'I', 'D', 'B', 0};
-    static final int VERSION = 1;
+    static final int LEGACY_VERSION = 0;
+    static final int V1 = 1;
+    static final int VERSION = 2;
     static final int FILE_HEADER_SIZE = 16;
 
     private FileFormat() {
     }
 
     static byte[] header() {
+        return header(VERSION);
+    }
+
+    static byte[] header(int version) {
         ByteBuffer buffer = ByteBuffer.allocate(FILE_HEADER_SIZE);
         buffer.put(MAGIC);
-        buffer.putInt(VERSION);
+        buffer.putInt(version);
         buffer.putInt(FILE_HEADER_SIZE);
         return buffer.array();
     }
@@ -36,9 +42,10 @@ final class FileFormat {
         if (headerSize != FILE_HEADER_SIZE) {
             throw new CorruptDatabaseException("invalid file header size: " + headerSize);
         }
-        if (version != VERSION) {
+        if (version != V1 && version != VERSION) {
             throw new UnsupportedFormatException(
-                    "unsupported JavaMinDB format version " + version + "; supported version is " + VERSION);
+                    "unsupported JavaMinDB format version " + version
+                            + "; supported versions are " + V1 + " and " + VERSION);
         }
         return new Header(version, headerSize);
     }

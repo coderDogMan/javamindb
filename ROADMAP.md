@@ -6,44 +6,30 @@ JavaMinDB is developed in explicit phases so correctness and maintainability gro
 
 Status: **complete**
 
-- Standard Maven layout
-- Java package namespace
-- MIT license
-- JUnit 5 regression tests
-- GitHub Actions CI on Java 17 and 21
-- Contributor and security documentation
-- Restart index reconstruction fixed
-- Platform-specific merge paths removed
-- Clean OSS baseline established
-
-Exit gate: `mvn clean verify` passes in CI and reopen/merge regression tests pass.
+Maven layout, license, CI, tests, contributor/security docs, cross-platform paths, and restart correctness.
 
 ## Phase 1 — Stable append-only engine
 
 Status: **complete in v0.1.0**
 
-- Define public API semantics and error model
-- Add exclusive directory locking
-- Define and implement versioned on-disk format v1
-- Migrate the Phase 0 headerless format
-- Validate entry lengths and operation codes
-- Repair physically incomplete trailing records deterministically
-- Reject structural corruption and unsupported future versions
-- Add explicit `sync()` boundary
-- Document API, file format, compatibility policy, and release notes
-- Add a tag-driven GitHub release workflow
-
-Exit gate: the Phase 1 regression suite passes on supported JDKs and the repository is ready to tag `v0.1.0`.
+Public API semantics, directory locking, format v1, legacy migration, structural validation, deterministic incomplete-tail repair, explicit sync, and first release workflow.
 
 ## Phase 2 — Durability and crash recovery
 
-- Define WAL and durability semantics
-- Add per-record checksums / CRC
-- Detect payload corruption, not only structural corruption
-- Define sync/flush ordering across WAL and data files
-- Deterministic crash recovery across fault points
-- Fault-injection and torn-write tests
-- Define format-v2 migration if the record layout changes
+Status: **complete in v0.2.0**
+
+- WAL-first mutation protocol
+- WAL fsync before data append
+- per-record CRC32C
+- monotonic record sequence numbers
+- idempotent WAL replay
+- data/WAL incomplete-tail handling
+- format-v2 migration from Phase 0 and v1
+- recovery-required state after ambiguous persistence errors
+- fault injection at WAL/data/checkpoint boundaries
+- durability, API, and file-format documentation
+
+Exit gate: `mvn clean verify` passes on Java 17 and Java 21 with WAL recovery, CRC corruption, migration, and fault-injection regression tests.
 
 ## Phase 3 — LSM foundation
 
@@ -63,19 +49,20 @@ Exit gate: the Phase 1 regression suite passes on supported JDKs and the reposit
 ## Phase 5 — Benchmarking and concurrency
 
 - JMH benchmark module
-- Repeatable datasets and workloads
-- Read/write contention tests
-- Memory and write-amplification measurements
-- Comparisons reported with methodology and limitations
+- Repeatable datasets/workloads
+- contention tests
+- memory/write-amplification measurements
+- comparisons with methodology and limitations
 
 ## Phase 6 — Distribution and adoption
 
 - Maven Central publication
-- Versioned release notes
-- Examples and integration guides
-- Contributor-friendly issues
-- Real-world user feedback and compatibility policy
+- versioned release notes
+- examples/integration guides
+- contributor-friendly issues
+- real-world user feedback
+- compatibility policy refinement
 
 ## Long-term direction
 
-The project aims to remain a small, understandable pure-Java storage engine. Features that materially increase complexity must justify their educational or practical value.
+Remain a small, understandable pure-Java storage engine whose internals are readable enough to learn from and disciplined enough to exercise real storage-engine engineering.
