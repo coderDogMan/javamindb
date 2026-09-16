@@ -4,7 +4,7 @@
 
     <groupId>io.github.coderdogman</groupId>
     <artifactId>javamindb</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <name>JavaMinDB</name>
     <description>A tiny embeddable log-structured key-value store written in pure Java.</description>
     <url>https://github.com/coderDogMan/javamindb</url>
