@@ -1,2 +1,8 @@
-# Project exclude paths
-/out/
+target/
+out/
+.idea/
+*.iml
+*.class
+.DS_Store
+minidb.data
+minidb.data.merge
