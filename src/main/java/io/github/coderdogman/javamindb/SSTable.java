@@ -219,7 +219,6 @@ final class SSTable implements AutoCloseable {
         long length = channel.size();
         int record = 0;
         ByteArrayKey previous = null;
-        long previousSequence = 0;
         while (offset < length) {
             if (length - offset < Entry.V2_HEADER_SIZE) {
                 throw new CorruptDatabaseException("truncated SSTable record header: " + path);
@@ -241,14 +240,13 @@ final class SSTable implements AutoCloseable {
             if (previous != null && previous.compareTo(key) >= 0) {
                 throw new CorruptDatabaseException("SSTable keys are not strictly sorted: " + path);
             }
-            if (entry.sequence() <= 0 || entry.sequence() < previousSequence) {
-                throw new CorruptDatabaseException("invalid SSTable sequence ordering: " + path);
+            if (entry.sequence() <= 0) {
+                throw new CorruptDatabaseException("invalid SSTable sequence: " + path);
             }
             if (record % SPARSE_INDEX_INTERVAL == 0) {
                 sparse.add(new SparseEntry(key, offset));
             }
             previous = key;
-            previousSequence = entry.sequence();
             offset += entry.size();
             record++;
         }
