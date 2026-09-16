@@ -2,6 +2,34 @@
 
 All notable user-visible changes are documented here.
 
+## 0.3.0 — Phase 3
+
+LSM-foundation release.
+
+### Added
+
+- Ordered in-memory `MemTable` using unsigned lexicographic byte-key ordering.
+- Immutable MemTable snapshots and explicit `MiniDB.flush()`.
+- Immutable generation-numbered SSTables under `sstables/`.
+- CRC32C-protected SSTable records using the existing format-v2 entry encoding.
+- In-memory sparse index sampled every 16 SSTable records.
+- Newest-table-wins point lookup with tombstone shadowing.
+- `MiniDB.entries()` ordered live-state snapshots through the public `KeyValue` type.
+- `docs/LSM_FOUNDATION.md`.
+
+### Changed
+
+- `sync()` now checkpoints the canonical data/WAL state and flushes the current MemTable.
+- Startup reconstructs the MemTable only from data-file sequences newer than the newest persisted SSTable.
+- `merge()` removes stale SSTables and publishes one fresh live-state SSTable.
+- Project version is `0.3.0`.
+
+### Compatibility
+
+- The Phase 2 WAL and canonical data-file durability contract remains authoritative.
+- Existing Phase 0/v1 migration and format-v2 compatibility behavior is preserved.
+- SSTables are derived sorted state in v0.3; Phase 4 will add compaction policy and read-amplification controls.
+
 ## 0.2.0 — Phase 2
 
 Durability and crash-recovery release.

@@ -7,6 +7,7 @@ All integer fields use Java `ByteBuffer` big-endian byte order.
 - `minidb.data` — canonical append-only data file
 - `minidb.wal` — write-ahead log
 - `minidb.data.merge` — temporary merge/migration file
+- `sstables/sst-<generation>.sst` — immutable sorted-table files introduced in v0.3
 - `.javamindb.lock` — directory lock file
 
 ## Data file header
@@ -40,7 +41,7 @@ Operations:
 - `1` = PUT
 - `2` = DELETE
 
-DELETE must have zero value length. Sequence numbers are positive and strictly increase in physical append order.
+DELETE must have zero value length. Sequence numbers are positive and strictly increase in canonical data-file append order.
 
 CRC32C covers, in order:
 
@@ -62,14 +63,32 @@ The checksum itself is not included.
 
 WAL records use the same format-v2 record encoding as the data file.
 
+## SSTable format
+
+Each Phase 3 SSTable starts with a fixed 32-byte header:
+
+| Offset | Size | Field |
+| ---: | ---: | --- |
+| 0 | 8 | magic `JMINSST1` |
+| 8 | 4 | SSTable version (`1`) |
+| 12 | 4 | header size (`32`) |
+| 16 | 8 | positive generation number |
+| 24 | 8 | maximum record sequence in this table |
+
+The header is followed by format-v2 records sorted strictly by unsigned lexicographic key order. Unlike the canonical append-only file, physical sequence numbers inside an SSTable do not need to be increasing because key order is the primary physical order.
+
+SSTables are immutable once published. On open, JavaMinDB scans the table, validates every record CRC, validates strict key ordering, and builds an in-memory sparse index sampled every 16 records. The sparse index is derived state and is not stored on disk in v0.3.
+
 ## Recovery rules
 
-- A physically incomplete final data record is truncated to its starting offset.
+- A physically incomplete final canonical data record is truncated to its starting offset.
 - A physically incomplete final WAL record is truncated to its starting offset.
 - CRC32C mismatch is corruption and fails closed.
-- malformed sizes, operations, sequence numbers, file headers, or WAL headers fail closed.
+- malformed sizes, operations, sequence numbers, file headers, WAL headers, or SSTable headers fail closed.
 - complete WAL entries with sequence numbers newer than the data-file high-water sequence are replayed.
 - WAL entries already represented by the data file are skipped, making recovery idempotent.
+- SSTables are derived sorted state; canonical data + WAL remain the recovery authority in v0.3.
+- an SSTable whose high-water sequence is newer than recovered canonical state is rejected as inconsistent.
 
 ## Migration
 
