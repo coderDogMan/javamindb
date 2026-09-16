@@ -1,39 +1,49 @@
 # Roadmap
 
-JavaMinDB is being developed in explicit phases so correctness and maintainability grow before feature count.
+JavaMinDB is developed in explicit phases so correctness and maintainability grow before feature count.
 
 ## Phase 0 — Project revival
 
-Status: in progress
+Status: **complete**
 
 - Standard Maven layout
 - Java package namespace
 - MIT license
 - JUnit 5 regression tests
-- GitHub Actions CI on supported JDKs
+- GitHub Actions CI on Java 17 and 21
 - Contributor and security documentation
-- Fix restart index reconstruction
-- Remove platform-specific merge paths
-- Establish a clean baseline for future storage work
+- Restart index reconstruction fixed
+- Platform-specific merge paths removed
+- Clean OSS baseline established
 
-Exit gate: `mvn clean verify` passes on CI and reopen/merge regression tests pass.
+Exit gate: `mvn clean verify` passes in CI and reopen/merge regression tests pass.
 
 ## Phase 1 — Stable append-only engine
 
-- Define public API semantics
-- Define error model
-- Harden entry decoding and size validation
-- Add corruption/truncation tests
-- Add file-format versioning strategy
-- Publish first tagged pre-1.0 release
+Status: **complete in v0.1.0**
 
-## Phase 2 — Durability and recovery
+- Define public API semantics and error model
+- Add exclusive directory locking
+- Define and implement versioned on-disk format v1
+- Migrate the Phase 0 headerless format
+- Validate entry lengths and operation codes
+- Repair physically incomplete trailing records deterministically
+- Reject structural corruption and unsupported future versions
+- Add explicit `sync()` boundary
+- Document API, file format, compatibility policy, and release notes
+- Add a tag-driven GitHub release workflow
 
-- WAL semantics and sync policy
-- Checksums / CRC
-- Detect partial writes
-- Deterministic crash recovery
-- Fault-injection tests
+Exit gate: the Phase 1 regression suite passes on supported JDKs and the repository is ready to tag `v0.1.0`.
+
+## Phase 2 — Durability and crash recovery
+
+- Define WAL and durability semantics
+- Add per-record checksums / CRC
+- Detect payload corruption, not only structural corruption
+- Define sync/flush ordering across WAL and data files
+- Deterministic crash recovery across fault points
+- Fault-injection and torn-write tests
+- Define format-v2 migration if the record layout changes
 
 ## Phase 3 — LSM foundation
 

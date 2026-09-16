@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Verify tag matches project version
+        run: |
+          PROJECT_VERSION=$(mvn --batch-mode --no-transfer-progress help:evaluate -Dexpression=project.version -q -DforceStdout)
+          test "${GITHUB_REF_NAME}" = "v${PROJECT_VERSION}"
+      - name: Verify and package
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          target/javamindb-*.jar
+          --verify-tag
+          --generate-notes
+          --title "JavaMinDB ${GITHUB_REF_NAME}"
