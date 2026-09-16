@@ -7,7 +7,6 @@ final class Entry {
     static final int HEADER_SIZE = 10;
     static final short PUT = 1;
     static final short DELETE = 2;
-    private static final int MAX_COMPONENT_SIZE = 64 * 1024 * 1024;
 
     private final byte[] key;
     private final byte[] value;
@@ -46,23 +45,27 @@ final class Entry {
         return buffer.array();
     }
 
-    static Entry decodeHeader(byte[] header) throws java.io.IOException {
+    static Entry decodeHeader(byte[] header, long offset) throws CorruptDatabaseException {
         if (header.length != HEADER_SIZE) {
-            throw new java.io.IOException("invalid entry header length: " + header.length);
+            throw new CorruptDatabaseException("invalid entry header length at offset " + offset);
         }
+
         ByteBuffer buffer = ByteBuffer.wrap(header);
         int keySize = buffer.getInt();
         int valueSize = buffer.getInt();
         short mark = buffer.getShort();
 
-        if (keySize <= 0 || keySize > MAX_COMPONENT_SIZE) {
-            throw new java.io.IOException("invalid key size: " + keySize);
+        if (keySize <= 0 || keySize > MiniDB.MAX_KEY_SIZE) {
+            throw new CorruptDatabaseException("invalid key size " + keySize + " at offset " + offset);
         }
-        if (valueSize < 0 || valueSize > MAX_COMPONENT_SIZE) {
-            throw new java.io.IOException("invalid value size: " + valueSize);
+        if (valueSize < 0 || valueSize > MiniDB.MAX_VALUE_SIZE) {
+            throw new CorruptDatabaseException("invalid value size " + valueSize + " at offset " + offset);
         }
         if (mark != PUT && mark != DELETE) {
-            throw new java.io.IOException("invalid entry mark: " + mark);
+            throw new CorruptDatabaseException("invalid entry operation " + mark + " at offset " + offset);
+        }
+        if (mark == DELETE && valueSize != 0) {
+            throw new CorruptDatabaseException("delete entry has a value at offset " + offset);
         }
 
         return new Entry(null, null, keySize, valueSize, mark);
