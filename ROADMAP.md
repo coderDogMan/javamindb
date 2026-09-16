@@ -29,15 +29,22 @@ Status: **complete in v0.2.0**
 - fault injection at WAL/data/checkpoint boundaries
 - durability, API, and file-format documentation
 
-Exit gate: `mvn clean verify` passes on Java 17 and Java 21 with WAL recovery, CRC corruption, migration, and fault-injection regression tests.
-
 ## Phase 3 — LSM foundation
 
-- MemTable
-- Immutable MemTable flush
-- SSTable format
-- Sparse index
-- Ordered iteration primitives
+Status: **implemented for v0.3.0**
+
+- ordered `MemTable` backed by unsigned lexicographic byte keys
+- immutable MemTable snapshots
+- explicit `flush()` into immutable SSTables
+- generation-numbered SSTable files under `sstables/`
+- CRC32C-protected records reused inside SSTables
+- in-memory sparse index every 16 records
+- newest-table-wins point lookup with tombstone shadowing
+- restart reconstruction only for sequences newer than persisted SSTables
+- ordered live-state iteration through `entries()`
+- `merge()` integration that replaces stale tables with one fresh live-state SSTable
+
+Exit gate: Java 17/21 CI passes the Phase 2 regression suite plus MemTable, multi-SSTable, sparse-index, tombstone, ordered-iteration, merge, reopen, and SSTable-corruption tests.
 
 ## Phase 4 — Read and compaction efficiency
 
