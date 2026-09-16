@@ -1,28 +1,26 @@
-# JavaMinDB v0.1 API contract
+# JavaMinDB v0.2 API contract
 
-This document defines the public behavior that callers can rely on for v0.1.
+This document defines the public behavior of the v0.2 append-only engine.
 
-## Opening a database
+## Opening
 
 ```java
 MiniDB.open(Path directory)
 MiniDB.open(String directory)
 ```
 
-Opening creates the directory when needed and takes an exclusive file lock in that directory. A second JavaMinDB instance cannot open the same directory until the first closes.
-
-Opening also validates the data-file header, repairs a physically incomplete trailing record when safe, rebuilds the in-memory index, and migrates a valid Phase 0 headerless file to format v1.
+Opening creates the directory if needed and takes an exclusive file lock. It validates/migrates the data file, repairs only physically incomplete final records, rebuilds the in-memory index, validates the WAL, replays WAL records newer than the data-file high-water sequence, checkpoints recovered data, and resets the WAL.
 
 ## Keys and values
 
-The storage API is binary. JavaMinDB does not apply text encodings.
+The API is binary.
 
 - key: non-null, non-empty, at most `MiniDB.MAX_KEY_SIZE`
 - value: non-null, may be empty, at most `MiniDB.MAX_VALUE_SIZE`
-- caller-owned input arrays are copied before they become persistent/index state
-- values returned by `get` are copies
+- caller arrays are copied
+- `get()` returns a copy
 
-Invalid arguments throw `IllegalArgumentException` before storage mutation.
+Invalid input throws `IllegalArgumentException` before mutation.
 
 ## `put`
 
@@ -30,15 +28,14 @@ Invalid arguments throw `IllegalArgumentException` before storage mutation.
 void put(byte[] key, byte[] value) throws IOException
 ```
 
-`put` appends a new PUT record. If the key already exists, the newer record becomes authoritative. It does not implicitly call `sync()`.
+Write ordering is:
 
-## `get`
+1. append a sequence-numbered, CRC32C-protected WAL record,
+2. fsync the WAL,
+3. append the same record to the data file,
+4. update the in-memory index.
 
-```java
-byte[] get(byte[] key) throws IOException
-```
-
-Returns the latest live value, or `null` when the key is absent. An empty stored value is returned as a zero-length byte array and is distinct from absence.
+When `put()` returns successfully, the mutation has crossed the WAL durability boundary.
 
 ## `delete`
 
@@ -46,7 +43,15 @@ Returns the latest live value, or `null` when the key is absent. An empty stored
 boolean delete(byte[] key) throws IOException
 ```
 
-When the key exists, `delete` appends a tombstone, removes the key from the live index, and returns `true`. Deleting an absent key is a no-op and returns `false`.
+An existing key gets a WAL-protected DELETE tombstone and returns `true`. An absent key is a no-op and returns `false`.
+
+## `get`
+
+```java
+byte[] get(byte[] key) throws IOException
+```
+
+Returns the latest live value or `null`.
 
 ## `size`
 
@@ -54,7 +59,7 @@ When the key exists, `delete` appends a tombstone, removes the key from the live
 long size()
 ```
 
-Returns the count of live keys. It does not report physical record count or file size.
+Returns live-key count.
 
 ## `sync`
 
@@ -62,7 +67,7 @@ Returns the count of live keys. It does not report physical record count or file
 void sync() throws IOException
 ```
 
-Requests an fsync of the current append-only data file. In v0.1 this is an explicit file persistence boundary only. It is not a transaction commit and does not provide WAL semantics.
+Checkpoints the current state by forcing `minidb.data` and then resetting the WAL. Successful writes do not require `sync()` to be recoverable because the WAL is forced before the write returns.
 
 ## `merge`
 
@@ -70,23 +75,25 @@ Requests an fsync of the current append-only data file. In v0.1 this is an expli
 void merge() throws IOException
 ```
 
-Rewrites only the latest live PUT records into a fresh format-v1 file and atomically replaces the old file when the platform supports atomic moves. The replacement file is synced before the swap.
+Rewrites only live PUT records into a fresh format-v2 data file, forces it, replaces the canonical data file, and resets the WAL. Sequence numbers of surviving entries are preserved.
+
+## I/O failures and ambiguous completion
+
+If a persistence operation throws after a WAL record may have been forced, the mutation may already be durable. The current `MiniDB` instance enters a recovery-required state: further data operations fail with `IllegalStateException`. Close it and reopen the directory; WAL recovery determines the authoritative durable result.
 
 ## `close`
 
-`close()` is idempotent. It releases both the data file and the exclusive directory lock. Data operations after close throw `IllegalStateException`.
-
-## Threading and process model
-
-A single `MiniDB` instance is thread-safe through a read/write lock. v0.1 intentionally permits only one open JavaMinDB instance per database directory, including within the same JVM.
+`close()` is idempotent. Under normal conditions it checkpoints before releasing files and the directory lock. If a prior persistence error put the instance into recovery-required state, close preserves the WAL instead of clearing it so the next open can recover.
 
 ## Error model
 
-- `IllegalArgumentException`: invalid API input
-- `IllegalStateException`: operation on a closed instance
-- `DatabaseLockedException`: another instance owns the directory
-- `CorruptDatabaseException`: recognized file structure is invalid
-- `UnsupportedFormatException`: file uses a newer/unknown JavaMinDB format version
-- other `IOException`: underlying filesystem or I/O failure
+- `IllegalArgumentException`: invalid input
+- `IllegalStateException`: closed instance or reopen required after a persistence failure
+- `DatabaseLockedException`: directory already owned
+- `CorruptDatabaseException`: checksum or structural corruption
+- `UnsupportedFormatException`: unsupported data/WAL format
+- other `IOException`: filesystem/I/O failure
 
-JavaMinDB does not reinterpret structural corruption as an empty database.
+## Threading/process model
+
+A single instance is protected by a read/write lock. Only one JavaMinDB instance may own a database directory at a time.
